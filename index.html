@@ -822,7 +822,8 @@ function evaluatePixel(sample) {
                 limit: MAX_SCENES,
                 sortby: [{ field: 'properties.datetime', direction: 'desc' }],
                 query: {
-                    'eo:cloud_cover': { lt: Math.min(cloudCover, 100) }
+                    'eo:cloud_cover': { lt: Math.min(cloudCover, 100) },
+                    'sentinelhub:dataMaskCoverage': { gt: 20 }
                 }
             };
             const response = await fetch(CATALOG_API_URL, {
@@ -850,6 +851,10 @@ function evaluatePixel(sample) {
             if (!feature || !feature.properties) return null;
             const isoTime = feature.properties.datetime || feature.properties.date;
             if (!isoTime) return null;
+            const coverage = feature.properties['sentinelhub:dataMaskCoverage'] ?? feature.properties.dataMaskCoverage;
+            if (typeof coverage === 'number' && coverage < 20) {
+                return null; // descartar tiles con <20% de cobertura en el AOI
+            }
             const dateOnly = isoTime.split('T')[0];
             const cloudCover = feature.properties['eo:cloud_cover'];
             const tileId = feature.properties['sentinelhub:tile_id'] || feature.properties.tileId || feature.id;
@@ -861,7 +866,8 @@ function evaluatePixel(sample) {
                 date: dateOnly,
                 cloudCover: typeof cloudCover === 'number' ? cloudCover : null,
                 tileId,
-                quicklookHref
+                quicklookHref,
+                dataMaskCoverage: coverage ?? null
             };
         }
 
@@ -975,6 +981,9 @@ function evaluatePixel(sample) {
                 }
             }
             return Array.from(sceneMap.values())
+                .filter(scene => {
+                    return typeof scene.dataMaskCoverage !== 'number' || scene.dataMaskCoverage >= 20;
+                })
                 .sort((a, b) => new Date(b.isoTime) - new Date(a.isoTime))
                 .slice(0, MAX_SCENES);
         }
@@ -996,6 +1005,7 @@ function evaluatePixel(sample) {
                 const img = document.createElement('img');
                 img.alt = `Vista previa ${scene.date}`;
                 img.className = 'w-full h-full object-cover';
+                img.crossOrigin = 'anonymous';
                 previewWrapper.appendChild(img);
                 setScenePreviewImage({
                     imgElement: img,
@@ -1041,12 +1051,14 @@ function evaluatePixel(sample) {
                 `&WIDTH=${width}` +
                 `&HEIGHT=${height}` +
                 `&CRS=EPSG:4326` +
-                `&FORMAT=image/jpeg` +
+                `&FORMAT=image/png` +
                 `&PREVIEW=2` +
                 `&GAMMA=1.4` +
-                `&TRANSPARENT=false` +
+                `&TRANSPARENT=true` +
                 `&SHOWLOGO=false` +
-                (tileId ? `&TILEID=${encodeURIComponent(tileId)}` : '');
+                `&STYLE=CLIP_TO_GEOMETRY` +
+                (tileId ? `&TILEID=${encodeURIComponent(tileId)}` : '') +
+                (lastPolygon ? `&GEOMETRY=${encodeURIComponent(geoJsonPolygonToWkt(lastPolygon.toGeoJSON()))}` : '');
         }
 
         function setScenePreviewImage({ imgElement, scene, instanceId, bounds, authToken }) {
