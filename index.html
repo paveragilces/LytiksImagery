@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analizador de Índices con Sentinel Hub</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS (para el mapa base) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Leaflet Draw CSS & JS (para dibujar polígonos) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    
+    <!-- Leaflet Esri (para el mapa base satelital) -->
+    <script src="https://unpkg.com/esri-leaflet@3.0.10/dist/esri-leaflet.js"></script>
+    
+    <!-- Turf.js (para medición de área) -->
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #map { height: 450px; width: 100%; border-radius: 0.5rem; z-index: 10; }
+        /* Forzar que la UI de Leaflet se vea bien en fondo oscuro */
+        .leaflet-draw-toolbar a, .leaflet-control-zoom a, .leaflet-control-layers-toggle {
+            background-color: #4A5568 !important; /* bg-gray-700 */
+            color: white !important;
+            border-color: #718096 !important;
+        }
+        .leaflet-control-layers, .leaflet-control-attribution {
+            background: rgba(74, 85, 104, 0.8) !important;
+            color: white !important;
+        }
+        .leaflet-control-layers-base label {
+            color: white !important;
+        }
+        .leaflet-control-layers-base label .leaflet-control-layers-selector {
+             margin-top: 4px;
+        }
+        a {
+            color: #63B3ED !important; /* text-blue-400 */
+        }
+        
+        .leaflet-draw-actions li a {
+            background-color: #E53E3E !important; /* bg-red-600 */
+        }
+        #results-image-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 0.5rem;
+            border: 2px solid #4A5568;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4 sm:p-8 flex flex-col items-center">
+
+    <!-- Contenedor Principal -->
+    <div class="w-full max-w-4xl mx-auto space-y-6">
+
+        <!-- 1. Título -->
+        <header class="text-center">
+            <h1 class="text-3xl sm:text-4xl font-bold text-green-400">Analizador de Índices con Sentinel Hub</h1>
+            <p class="text-lg text-gray-300">Analiza el historial de imágenes de Sentinel-2 para tus polígonos.</p>
+        </header>
+
+        <!-- 2. Configuración de Sentinel Hub -->
+        <section class="bg-gray-800 p-5 rounded-lg shadow-lg space-y-4">
+            <h2 class="text-xl font-semibold">1. Configuración de Sentinel Hub</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="md:col-span-2">
+                    <label for="instance-id" class="block text-sm font-medium text-gray-300 mb-1">Instance ID (Service Endpoint)</label>
+                    <input type="text" id="instance-id" placeholder="ID de tu configuración (ej. 5c348d45...)" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500">
+                </div>
+                <div class="md:col-span-2">
+                    <label for="preview-layer-id" class="block text-sm font-medium text-gray-300 mb-1">Capa para miniaturas</label>
+                    <input type="text" id="preview-layer-id" value="2_TONEMAPPED_NATURAL_COLOR" placeholder="Ej. 2_TONEMAPPED_NATURAL_COLOR" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500">
+                    <p class="text-xs text-gray-500 mt-1">Usa el ID de una capa en color natural/tonemapped de tu configuración. Se emplea solo para las vistas previas.</p>
+                </div>
+                <div>
+                    <label for="client-id" class="block text-sm font-medium text-gray-300 mb-1">Client ID (OAuth)</label>
+                    <input type="text" id="client-id" placeholder="Opcional" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500">
+                </div>
+                <div>
+                    <label for="client-secret" class="block text-sm font-medium text-gray-300 mb-1">Client Secret (OAuth)</label>
+                    <input type="password" id="client-secret" placeholder="Opcional" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500">
+                </div>
+            </div>
+            <p class="text-xs text-gray-400">Puedes usar el <strong>Instance ID</strong> para consumir el servicio WMS clásico (no requiere OAuth). Si quieres usar la Process API, ingresa también un cliente OAuth (Client ID + Secret).</p>
+        </section>
+
+        <!-- 3. Mapa y Dibujo -->
+        <section class="relative">
+            <h2 class="text-xl font-semibold mb-3">2. Dibujar Polígono</h2>
+            <div id="map"></div>
+             <!-- Mensaje de Alerta no intrusivo -->
+            <div id="alert-message" style="display: none; position: absolute; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 1001; padding: 0.75rem 1.25rem; border-radius: 0.5rem; background-color: #E53E3E; color: white; font-weight: 600;"></div>
+            <p id="polygon-area-info" class="mt-3 text-sm text-gray-300 italic">Dibuja un polígono para medir el área (mínimo recomendado: 0.01 km²).</p>
+        </section>
+
+        <!-- 4. Controles de Análisis -->
+        <section class="bg-gray-800 p-5 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-3">3. Definir Parámetros de Análisis</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Rango de Fechas -->
+                <div>
+                    <label for="date-start" class="block text-sm font-medium text-gray-300 mb-1">Fecha de Inicio</label>
+                    <input type="date" id="date-start" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500" style="color-scheme: dark;">
+                </div>
+                <div>
+                    <label for="date-end" class="block text-sm font-medium text-gray-300 mb-1">Fecha de Fin</label>
+                    <input type="date" id="date-end" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500" style="color-scheme: dark;">
+                </div>
+                <!-- Cobertura de Nubes -->
+                <div>
+                    <label for="cloud-cover" class="block text-sm font-medium text-gray-300">Max. Cobertura de Nubes: <span id="cloud-cover-value" class="font-bold text-green-400">20%</span></label>
+                    <input type="range" id="cloud-cover" min="0" max="100" value="20" class="w-full mt-2 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <!-- *** Selector de Índice ACTUALIZADO *** -->
+                <div>
+                    <label for="index-select" class="block text-sm font-medium text-gray-300 mb-1">Capa de Análisis</label>
+                    <select id="index-select" class="w-full p-3 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500">
+                        <option value="3_NDVI">NDVI (Salud Vegetal)</option>
+                        <option value="7_NDWI">NDWI (Índice de Agua)</option>
+                        <option value="5_MOISTURE_INDEX">Moisture Index (Humedad)</option>
+                        <option value="1_TRUE_COLOR">True Color (Foto Real)</option>
+                        <option value="4_FALSE-COLOR-URBAN">False Color (Urban)</option>
+                        <option value="6_SWIR">SWIR (Infrarrojo)</option>
+                    </select>
+                </div>
+            </div>
+            <!-- Botones de Acción -->
+            <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <button id="fetch-scenes-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md transition duration-200">
+                    Buscar escenas disponibles
+                </button>
+                <button id="analyze-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-md transition duration-200">
+                    Procesar índice seleccionado
+                </button>
+            </div>
+        </section>
+
+        <!-- 4. Escenas disponibles -->
+        <section id="scene-gallery-section" class="hidden bg-gray-800 p-5 rounded-lg shadow-lg">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <h2 class="text-xl font-semibold text-green-400">4. Escoge una escena</h2>
+                <p id="selected-scene-info" class="text-sm text-gray-300">Aún no has seleccionado ninguna escena.</p>
+            </div>
+            <p id="scene-gallery-status" class="text-sm text-gray-400 mt-2">Usa el botón "Buscar escenas disponibles" para cargar miniaturas del rango de fechas elegido.</p>
+            <div id="scene-gallery" class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <!-- Tarjetas de escenas -->
+            </div>
+        </section>
+
+        <!-- 5. Resultados del Análisis (Imagen) -->
+        <section id="results-section" class="hidden bg-gray-800 p-5 rounded-lg shadow-lg">
+            <h2 id="results-title" class="text-xl font-semibold mb-3 text-center text-green-400">Resultado del Análisis</h2>
+            <p id="analysis-message" class="text-center text-gray-300 animate-pulse">Cargando imagen desde Sentinel Hub...</p>
+            <div id="results-image-container" class="flex justify-center bg-gray-900 p-2 rounded-md mt-4">
+                <!-- La imagen de Sentinel Hub se insertará aquí -->
+            </div>
+            <!-- *** MENSAJE DE AYUDA MEJORADO *** -->
+            <p id="results-helper-text" class="text-center text-sm text-gray-400 mt-3" style="display: none;">
+                Si la imagen aparece en blanco o vacía, es probable que no se hayan encontrado datos satelitales.
+                <br>
+                <strong>Sugerencia:</strong> Intenta ampliar el rango de fechas o aumentar el porcentaje de cobertura de nubes.
+            </p>
+            <div class="mt-3 text-center">
+                <a id="open-wms-link" href="#" target="_blank" rel="noopener" class="hidden inline-block bg-gray-700 hover:bg-gray-600 text-sm px-4 py-2 rounded-md text-white">
+                    Abrir / descargar la imagen generada
+                </a>
+            </div>
+        </section>
+
+        <!-- 6. Explicación de Índices -->
+        <section id="explanation-section" class="bg-gray-800 p-5 rounded-lg shadow-lg">
+            <h2 id="explanation-title" class="text-xl font-semibold mb-3 text-green-400">¿Qué estoy viendo?</h2>
+            <p id="explanation-text" class="text-gray-300 whitespace-pre-line">
+                <!-- El texto se actualizará dinámicamente -->
+            </S>
+        </section>
+
+    </div> <!-- Fin del Contenedor Principal -->
+
+    <script>
+        // --- 1. REFERENCIAS AL DOM ---
+        const instanceIdInput = document.getElementById('instance-id');
+        const previewLayerInput = document.getElementById('preview-layer-id');
+        const clientIdInput = document.getElementById('client-id');
+        const clientSecretInput = document.getElementById('client-secret');
+        const mapContainer = document.getElementById('map');
+        const alertMessage = document.getElementById('alert-message');
+        const dateStartInput = document.getElementById('date-start');
+        const dateEndInput = document.getElementById('date-end');
+        const cloudCoverSlider = document.getElementById('cloud-cover');
+        const cloudCoverValue = document.getElementById('cloud-cover-value');
+        const indexSelect = document.getElementById('index-select');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const resultsSection = document.getElementById('results-section');
+        const resultsTitle = document.getElementById('results-title');
+        const analysisMessage = document.getElementById('analysis-message');
+        const resultsImageContainer = document.getElementById('results-image-container');
+        const resultsHelperText = document.getElementById('results-helper-text');
+        const openWmsLink = document.getElementById('open-wms-link');
+        const explanationTitle = document.getElementById('explanation-title');
+        const explanationText = document.getElementById('explanation-text');
+        const fetchScenesBtn = document.getElementById('fetch-scenes-btn');
+        const sceneGallerySection = document.getElementById('scene-gallery-section');
+        const sceneGallery = document.getElementById('scene-gallery');
+        const sceneGalleryStatus = document.getElementById('scene-gallery-status');
+        const selectedSceneInfo = document.getElementById('selected-scene-info');
+        const polygonAreaInfo = document.getElementById('polygon-area-info');
+        
+        // --- 2. VARIABLES GLOBALES ---
+        let map;
+        let drawnItems;
+        let lastPolygon = null;
+        let accessToken = null;
+        let tokenExpiresAt = 0;
+        let tokenSignature = null;
+        let currentImageObjectUrl = null;
+        const PROCESS_API_URL = 'https://services.sentinel-hub.com/api/v1/process';
+        const CATALOG_API_URL = 'https://services.sentinel-hub.com/api/v1/catalog/search';
+        const TOKEN_URL = 'https://services.sentinel-hub.com/oauth/token';
+        const CRS_URL = 'http://www.opengis.net/def/crs/EPSG/0/4326';
+        const MAX_SCENES = 12;
+        const DEFAULT_PREVIEW_LAYER_ID = '2_TONEMAPPED_NATURAL_COLOR';
+        const wfsTypeNameCache = new Map();
+        let previewAuthToken = null;
+        let currentPolygonAreaKm2 = 0;
+        const MIN_ANALYSIS_AREA_KM2 = 0.01; // 10 000 m²
+        const evalScripts = {
+            '3_NDVI': `//VERSION=3
+function setup() {
+  return {
+    input: ["B04", "B08"],
+    output: { bands: 3 }
+  };
+}
+function evaluatePixel(sample) {
+  const ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04 + 0.0000001);
+  return colorBlend(ndvi,
+    [-0.5, 0, 0.2, 0.4, 0.6, 0.8, 1.0],
+    [
+      [0.4,0.2,0.05],
+      [0.75,0.43,0.17],
+      [0.9,0.9,0.2],
+      [0.4,0.8,0.4],
+      [0.1,0.6,0.1],
+      [0.0,0.4,0.0],
+      [0.0,0.2,0.0]
+    ]);
+}`,
+            '7_NDWI': `//VERSION=3
+function setup() {
+  return {
+    input: ["B03", "B08"],
+    output: { bands: 3 }
+  };
+}
+function evaluatePixel(sample) {
+  const ndwi = (sample.B03 - sample.B08) / (sample.B03 + sample.B08 + 0.0000001);
+  return colorBlend(ndwi,
+    [-0.5, 0, 0.3, 0.6, 1.0],
+    [
+      [0.6,0.3,0.1],
+      [0.8,0.8,0.2],
+      [0.2,0.7,0.5],
+      [0.0,0.4,0.8],
+      [0.0,0.2,0.6]
+    ]);
+}`,
+            '5_MOISTURE_INDEX': `//VERSION=3
+function setup() {
+  return {
+    input: ["B08", "B11"],
+    output: { bands: 3 }
+  };
+}
+function evaluatePixel(sample) {
+  const mi = (sample.B08 - sample.B11) / (sample.B08 + sample.B11 + 0.0000001);
+  return colorBlend(mi,
+    [-0.5, 0, 0.2, 0.5, 1.0],
+    [
+      [0.5,0.2,0.1],
+      [0.8,0.6,0.2],
+      [0.4,0.7,0.4],
+      [0.1,0.5,0.7],
+      [0.0,0.2,0.5]
+    ]);
+}`,
+            '1_TRUE_COLOR': `//VERSION=3
+function setup() {
+  return {
+    input: ["B04", "B03", "B02"],
+    output: { bands: 3 }
+  };
+}
+function evaluatePixel(sample) {
+  return [
+    sample.B04 * 2.5,
+    sample.B03 * 2.5,
+    sample.B02 * 2.5
+  ];
+}`,
+            '4_FALSE-COLOR-URBAN': `//VERSION=3
+function setup() {
+  return {
+    input: ["B12", "B11", "B04"],
+    output: { bands: 3 }
+  };
+}
+function evaluatePixel(sample) {
+  return [
+    sample.B12 * 4.0,
+    sample.B11 * 2.5,
+    sample.B04 * 2.5
+  ];
+}`,
+            '6_SWIR': `//VERSION=3
+function setup() {
+  return {
+    input: ["B12"],
+    output: { bands: 3 }
+  };
+}
+function evaluatePixel(sample) {
+  return [sample.B12, sample.B12, sample.B12];
+}`
+        };
+        let availableScenes = [];
+        let selectedSceneDate = null;
+        let selectedSceneTileId = null;
+        let activeWfsTypeName = null;
+        let lastInstanceIdForWfs = null;
+
+        // --- 3. INICIALIZACIÓN DEL MAPA (LEAFLET) ---
+        
+        // Capas base (Calles y Satélite)
+        const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        });
+
+        const satellite = L.esri.basemapLayer('Imagery'); // Mapa satelital de Esri
+
+        // Inicializar el mapa de Leaflet
+        map = L.map('map', {
+            center: [-3.9931, -79.2042], // Centrado en Loja
+            zoom: 13,
+            layers: [satellite, streets] // Cargar ambas, 'satellite' por defecto
+        });
+        
+        // Añadir control de capas
+        const baseMaps = {
+            "Satélite": satellite,
+            "Calles": streets
+        };
+        L.control.layers(baseMaps).addTo(map);
+
+        // Inicializar la capa de dibujo
+        drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+
+        // Configurar controles de dibujo (solo polígono y borrar)
+        const drawControl = new L.Control.Draw({
+            edit: {
+                featureGroup: drawnItems,
+                remove: true
+            },
+            draw: {
+                polygon: {
+                    shapeOptions: {
+                        color: '#48BB78' // Verde
+                    }
+                },
+                polyline: false,
+                rectangle: false,
+                circle: false,
+                marker: false,
+                circlemarker: false
+            }
+        });
+        map.addControl(drawControl);
+
+        // Eventos de dibujo
+        map.on(L.Draw.Event.CREATED, (e) => {
+            drawnItems.clearLayers();
+            const layer = e.layer;
+            drawnItems.addLayer(layer);
+            lastPolygon = layer;
+            map.fitBounds(layer.getBounds());
+            updatePolygonAreaDisplay(layer);
+        });
+        
+        map.on(L.Draw.Event.DELETED, () => {
+            lastPolygon = null;
+            updatePolygonAreaDisplay(null);
+        });
+
+        // --- 4. EVENTOS DE CONTROLES ---
+
+        // Actualizar el valor del slider de nubes
+        cloudCoverSlider.addEventListener('input', (e) => {
+            cloudCoverValue.innerText = `${e.target.value}%`;
+        });
+        
+        // Cambiar la explicación al cambiar el índice
+        indexSelect.addEventListener('change', updateExplanation);
+
+        // Buscar escenas disponibles
+        fetchScenesBtn.addEventListener('click', async () => {
+            const instanceId = instanceIdInput.value.trim();
+            const startDate = dateStartInput.value;
+            const endDate = dateEndInput.value;
+            const cloudCover = parseInt(cloudCoverSlider.value, 10);
+
+            if (!instanceId) {
+                showAlert('Introduce tu Instance ID para consultar escenas.');
+                return;
+            }
+            if (!lastPolygon) {
+                showAlert('Por favor, dibuja un polígono en el mapa primero.');
+                return;
+            }
+            if (!startDate || !endDate) {
+                showAlert('Por favor, selecciona un rango de fechas.');
+                return;
+            }
+            if (startDate > endDate) {
+                showAlert('La fecha de inicio debe ser anterior a la fecha de fin.');
+                return;
+            }
+            const todayIso = new Date().toISOString().split('T')[0];
+            if (endDate > todayIso) {
+                showAlert('La fecha de fin no puede estar en el futuro.');
+                return;
+            }
+
+            const bounds = lastPolygon.getBounds();
+            if (lastInstanceIdForWfs !== instanceId) {
+                activeWfsTypeName = null;
+                lastInstanceIdForWfs = instanceId;
+            }
+            if (currentPolygonAreaKm2 && currentPolygonAreaKm2 < MIN_ANALYSIS_AREA_KM2) {
+                showAlert(`El polígono solo tiene ${currentPolygonAreaKm2.toFixed(3)} km² (< 0.01 km²). Es posible que no existan imágenes a esta escala.`);
+            }
+
+            sceneGallerySection.classList.remove('hidden');
+            sceneGallerySection.style.display = 'block';
+            sceneGalleryStatus.innerText = 'Buscando escenas disponibles...';
+            sceneGallery.innerHTML = '';
+            availableScenes = [];
+            selectedSceneDate = null;
+            selectedSceneTileId = null;
+            selectedSceneInfo.innerText = 'Aún no has seleccionado ninguna escena.';
+
+            try {
+                const clientId = clientIdInput.value.trim();
+                const clientSecret = clientSecretInput.value.trim();
+                const wantsCatalog = !!(clientId && clientSecret);
+
+                let scenes = [];
+                let catalogError = null;
+                if (wantsCatalog) {
+                    try {
+                        const geometry = ensureClosedGeometry(lastPolygon.toGeoJSON());
+                        const catalogResult = await fetchScenesFromCatalog({
+                            clientId,
+                            clientSecret,
+                            geometry: geometry.geometry,
+                            startDate,
+                            endDate,
+                            cloudCover
+                        });
+                        scenes = catalogResult.scenes;
+                        previewAuthToken = catalogResult.previewToken;
+                    } catch (err) {
+                        catalogError = err;
+                        console.warn('Fallo Catalog API, se intenta WFS como respaldo:', err);
+                    }
+                }
+
+                if (!scenes.length) {
+                    scenes = await fetchAvailableScenes({
+                        instanceId,
+                        bounds,
+                        startDate,
+                        endDate,
+                        cloudCover
+                    });
+                    previewAuthToken = null;
+                }
+
+                availableScenes = scenes;
+                if (scenes.length === 0) {
+                    const fallbackMsg = catalogError
+                        ? `No se encontraron escenas (Catalog falló con: ${catalogError.message || catalogError}).`
+                        : 'No se encontraron escenas para los parámetros indicados.';
+                    sceneGalleryStatus.innerText = fallbackMsg;
+                    return;
+                }
+                sceneGalleryStatus.innerText = `Se encontraron ${scenes.length} escenas. Selecciona una para continuar.`;
+                renderSceneGallery({
+                    scenes,
+                    instanceId,
+                    bounds,
+                    authToken: previewAuthToken
+                });
+                selectedSceneInfo.innerText = 'Haz clic en una miniatura para elegir la escena a procesar.';
+            } catch (error) {
+                sceneGalleryStatus.innerText = 'No se pudieron cargar las escenas.';
+                showAlert(`Error al consultar escenas: ${error.message || error}`);
+            }
+        });
+
+        // Botón de Analizar
+        analyzeBtn.addEventListener('click', async () => {
+            // Validar entradas
+            const instanceId = instanceIdInput.value.trim();
+            const clientId = clientIdInput.value.trim();
+            const clientSecret = clientSecretInput.value.trim();
+            const startDate = dateStartInput.value;
+            const endDate = dateEndInput.value;
+            const cloudCover = parseInt(cloudCoverSlider.value, 10);
+            const selectedLayer = indexSelect.value;
+            const hasOAuth = clientId && clientSecret;
+            const hasInstanceId = !!instanceId;
+            
+            if (!hasOAuth && !hasInstanceId) {
+                showAlert('Introduce tu Instance ID (WMS) o bien un Client ID y Client Secret (Process API).');
+                return;
+            }
+            if (!lastPolygon) {
+                showAlert('Por favor, dibuja un polígono en el mapa primero.');
+                return;
+            }
+            if (!startDate || !endDate) {
+                showAlert('Por favor, selecciona un rango de fechas.');
+                return;
+            }
+            const todayIso = new Date().toISOString().split('T')[0];
+            if (endDate > todayIso) {
+                showAlert('La fecha de fin no puede estar en el futuro.');
+                return;
+            }
+            if (startDate > endDate) {
+                showAlert('La fecha de inicio debe ser anterior a la fecha de fin.');
+                return;
+            }
+            if (!evalScripts[selectedLayer]) {
+                showAlert('La capa seleccionada no tiene un Evalscript configurado.');
+                return;
+            }
+            if (!selectedSceneDate) {
+                showAlert('Primero busca y selecciona una escena disponible.');
+                return;
+            }
+            if (currentPolygonAreaKm2 && currentPolygonAreaKm2 < MIN_ANALYSIS_AREA_KM2) {
+                showAlert(`Cuidado: el polígono mide solo ${currentPolygonAreaKm2.toFixed(3)} km² (< 0.01 km²). Puedes continuar, pero podría no haber datos.`);
+            }
+
+            // Mostrar sección de resultados y mensaje de carga
+            resultsSection.style.display = 'block';
+            analysisMessage.style.display = 'block';
+            analysisMessage.innerText = 'Procesando imagen con Sentinel Hub...';
+            resultsImageContainer.innerHTML = '';
+            resultsHelperText.style.display = 'none';
+            openWmsLink.classList.add('hidden');
+            openWmsLink.removeAttribute('href');
+            if (currentImageObjectUrl) {
+                URL.revokeObjectURL(currentImageObjectUrl);
+                currentImageObjectUrl = null;
+            }
+            
+            resultsTitle.innerText = `Resultado: ${indexSelect.options[indexSelect.selectedIndex].text}`;
+
+            // Geometría, tamaño y rango temporal listos para ambos flujos
+            const geometry = ensureClosedGeometry(lastPolygon.toGeoJSON());
+            const bounds = lastPolygon.getBounds();
+            const { width, height } = getOutputDimensions(map.getSize());
+        const timeRange = getTimeRangeFromSelection(selectedSceneDate, startDate, endDate);
+
+            try {
+                if (hasOAuth) {
+                    await requestProcessImage({
+                        clientId,
+                        clientSecret,
+                        geometry: geometry.geometry,
+                        timeFrom: timeRange.from,
+                        timeTo: timeRange.to,
+                        width,
+                        height,
+                        cloudCover,
+                        evalscript: evalScripts[selectedLayer],
+                        tileId: selectedSceneTileId
+                    });
+                } else {
+                    await requestWmsImage({
+                        instanceId,
+                        layerId: selectedLayer,
+                        bounds,
+                        geometry,
+                        timeFrom: timeRange.from,
+                        timeTo: timeRange.to,
+                        width,
+                        height,
+                        cloudCover,
+                        tileId: selectedSceneTileId
+                    });
+                }
+            } catch (error) {
+                analysisMessage.style.display = 'none';
+                showAlert(`Error al procesar la imagen: ${error.message}`);
+                resultsHelperText.style.display = 'none';
+                openWmsLink.classList.add('hidden');
+                openWmsLink.removeAttribute('href');
+            }
+        });
+
+        // --- 5. FUNCIONES DE AYUDA ---
+
+        function showAlert(message) {
+            alertMessage.innerText = message;
+            alertMessage.style.display = 'block';
+            setTimeout(() => {
+                alertMessage.style.display = 'none';
+            }, 6000);
+        }
+        
+        /**
+         * Actualiza el panel de explicación según el índice seleccionado.
+         */
+        function updateExplanation() {
+            const selectedIndex = indexSelect.value;
+            let title = '';
+            let text = '';
+
+            switch (selectedIndex) {
+                case '3_NDVI':
+                    title = 'NDVI (Índice de Vegetación de Diferencia Normalizada)';
+                    text = `Fórmula: (NIR - Rojo) / (NIR + Rojo)\n\n` +
+                           `Este es el índice más importante en agricultura. Utiliza la banda de Infrarrojo Cercano (NIR). La vegetación saludable refleja fuertemente el NIR.\n` +
+                           `- **Valores Altos (Verde):** Vegetación densa y saludable.\n` +
+                           `- **Valores Medios (Amarillo):** Vegetación con estrés.\n` +
+                           `- **Valores Bajos (Rojo/Marrón):** Suelo desnudo, roca o agua.`;
+                    break;
+                case '7_NDWI':
+                    title = 'NDWI (Índice de Agua de Diferencia Normalizada)';
+                    text = `Fórmula: (Verde - NIR) / (Verde + NIR)\n\n` +
+                           `Este índice es excelente para detectar cuerpos de agua y medir la humedad en la vegetación.\n` +
+                           `- **Valores Altos (Azul):** Agua libre (ríos, lagos, inundaciones).\n` +
+                           `- **Valores Medios:** Vegetación con alto contenido de agua.\n` +
+                           `- **Valores Bajos:** Suelo seco o vegetación estresada.`;
+                    break;
+                case '5_MOISTURE_INDEX':
+                    title = 'Moisture Index (Índice de Humedad)';
+                    text = `Fórmula: (NIR - SWIR) / (NIR + SWIR)\n\n` +
+                           `Este índice es muy sensible al contenido de agua en las hojas. Es ideal para detectar estrés hídrico (sequía) antes de que sea visible.\n` +
+                           `- **Valores Altos (Azul/Verde):** Alta humedad en la planta.\n` +
+                           `- **Valores Bajos (Rojo/Naranja):** Estrés hídrico, plantas secas.`;
+                    break;
+                case '1_TRUE_COLOR':
+                    title = 'True Color (Color Real)';
+                    text = `Fórmula: (Rojo, Verde, Azul)\n\n` +
+                           `Esta es la imagen satelital "normal", tal como la vería el ojo humano. Es útil para tener una referencia visual de la zona y comparar con los índices.`;
+                    break;
+                case '4_FALSE-COLOR-URBAN':
+                    title = 'False Color (Urban)';
+                    text = `Fórmula: (SWIR, NIR, Rojo)\n\n` +
+                           `Este compuesto de "Falso Color" resalta estructuras artificiales (urbanas) en tonos magenta o púrpura, mientras que la vegetación aparece en tonos de verde.`;
+                    break;
+                case '6_SWIR':
+                    title = 'SWIR (Infrarrojo de Onda Corta)';
+                    text = `Esta es una visualización de la banda de Infrarrojo de Onda Corta (Short-Wave Infrared). Es particularmente útil para diferenciar tipos de suelo, rocas y ver a través de neblina ligera. La vegetación absorbe fuertemente esta luz, por lo que aparece oscura.`;
+                    break;
+                default:
+                    title = 'Selecciona un Índice';
+                    text = 'Elige un índice del menú superior para ver la explicación.';
+            }
+            explanationTitle.innerText = title;
+            explanationText.innerText = text;
+        }
+
+        // Poner fechas por defecto (último mes)
+        const today = new Date();
+        const oneMonthAgo = new Date();
+        oneMonthAgo.setMonth(today.getMonth() - 1);
+        
+        dateEndInput.value = today.toISOString().split('T')[0];
+        dateStartInput.value = oneMonthAgo.toISOString().split('T')[0];
+        
+        // Cargar la primera explicación
+        updateExplanation();
+
+        /**
+         * Muestra el área estimada del polígono en km² y ha.
+         */
+        function updatePolygonAreaDisplay(polygonLayer) {
+            if (!polygonAreaInfo) return;
+            if (!polygonLayer) {
+                currentPolygonAreaKm2 = 0;
+                polygonAreaInfo.innerText = 'Dibuja un polígono para medir el área (mínimo recomendado: 0.01 km²).';
+                polygonAreaInfo.classList.remove('text-red-300', 'font-semibold');
+                return;
+            }
+            try {
+                if (typeof turf === 'undefined' || !turf.area) {
+                    polygonAreaInfo.innerText = 'No se pudo calcular el área (Turf.js no disponible).';
+                    return;
+                }
+                const geojson = polygonLayer.toGeoJSON();
+                const areaM2 = turf.area(geojson);
+                currentPolygonAreaKm2 = areaM2 / 1_000_000;
+                const areaHa = areaM2 / 10_000;
+                let message = `Área estimada: ${currentPolygonAreaKm2.toFixed(3)} km² (${areaHa.toFixed(1)} ha).`;
+                if (currentPolygonAreaKm2 < MIN_ANALYSIS_AREA_KM2) {
+                    message += ' El área es menor al mínimo recomendado (0.01 km²).';
+                    polygonAreaInfo.classList.add('text-red-300', 'font-semibold');
+                } else {
+                    polygonAreaInfo.classList.remove('text-red-300', 'font-semibold');
+                }
+                polygonAreaInfo.innerText = message;
+            } catch (err) {
+                polygonAreaInfo.innerText = 'No se pudo calcular el área del polígono.';
+                console.error('Error calculando área:', err);
+            }
+        }
+
+        /**
+         * Asegura que el GeoJSON del polígono tenga los anillos cerrados (requerido por Sentinel Hub).
+         */
+        function ensureClosedGeometry(feature) {
+            if (!feature || feature.type !== 'Feature' || !feature.geometry || feature.geometry.type !== 'Polygon') {
+                return feature;
+            }
+            const cloned = JSON.parse(JSON.stringify(feature));
+            cloned.geometry.coordinates = cloned.geometry.coordinates.map(closeRingIfNecessary);
+            return cloned;
+        }
+        function closeRingIfNecessary(ring) {
+            if (!ring || ring.length === 0) return ring;
+            const first = ring[0];
+            const last = ring[ring.length - 1];
+            if (first[0] !== last[0] || first[1] !== last[1]) {
+                return [...ring, first];
+            }
+            return ring;
+        }
+
+        /**
+         * Construye el payload de Sentinel Hub Process API.
+         */
+        function buildProcessPayload({ geometry, timeFrom, timeTo, width, height, cloudCover, evalscript, tileId }) {
+            const dataEntry = {
+                type: 'S2L2A',
+                dataFilter: {
+                    timeRange: {
+                        from: timeFrom,
+                        to: timeTo
+                    },
+                    maxCloudCoverage: cloudCover
+                },
+                processing: {
+                    mosaicking: tileId ? 'TILE' : 'MOST_RECENT'
+                }
+            };
+            if (tileId) {
+                dataEntry.dataFilter.tileIds = [tileId];
+            }
+            return {
+                input: {
+                    bounds: {
+                        geometry,
+                        properties: { crs: CRS_URL }
+                    },
+                    data: [dataEntry]
+                },
+                output: {
+                    width,
+                    height,
+                    responses: [
+                        {
+                            identifier: 'default',
+                            format: { type: 'image/png' }
+                        }
+                    ]
+                },
+                evalscript
+            };
+        }
+
+        /**
+         * Calcula un tamaño de salida respetando aspect ratio y limitando a 1024 px.
+         */
+        function getOutputDimensions(mapSize) {
+            let width = mapSize.x;
+            let height = mapSize.y;
+            const maxDimension = 1024;
+            if (width > height && width > maxDimension) {
+                const ratio = maxDimension / width;
+                width = maxDimension;
+                height = Math.round(height * ratio);
+            } else if (height >= width && height > maxDimension) {
+                const ratio = maxDimension / height;
+                height = maxDimension;
+                width = Math.round(width * ratio);
+            }
+            return { width, height };
+        }
+
+        /**
+         * Consulta el Catalog API (STAC) para obtener escenas disponibles usando OAuth.
+         */
+        async function fetchScenesFromCatalog({ clientId, clientSecret, geometry, startDate, endDate, cloudCover }) {
+            const token = await getAccessToken(clientId, clientSecret);
+            const body = {
+                collections: ['sentinel-2-l2a'],
+                intersects: geometry,
+                datetime: `${startDate}T00:00:00Z/${endDate}T23:59:59Z`,
+                limit: MAX_SCENES,
+                sortby: [{ field: 'properties.datetime', direction: 'desc' }],
+                query: {
+                    'eo:cloud_cover': { lt: Math.min(cloudCover, 100) }
+                }
+            };
+            const response = await fetch(CATALOG_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(body)
+            });
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(text.slice(0, 200) || `Catalog API respondió con ${response.status}`);
+            }
+            const json = await response.json();
+            const features = json.features || [];
+            const scenes = features
+                .map(mapCatalogFeature)
+                .filter(Boolean)
+                .slice(0, MAX_SCENES);
+            return { scenes, previewToken: token };
+        }
+
+        function mapCatalogFeature(feature) {
+            if (!feature || !feature.properties) return null;
+            const isoTime = feature.properties.datetime || feature.properties.date;
+            if (!isoTime) return null;
+            const dateOnly = isoTime.split('T')[0];
+            const cloudCover = feature.properties['eo:cloud_cover'];
+            const tileId = feature.properties['sentinelhub:tile_id'] || feature.properties.tileId || feature.id;
+            const quicklookHref = feature.assets && feature.assets.quicklook && feature.assets.quicklook.href
+                ? feature.assets.quicklook.href
+                : null;
+            return {
+                isoTime,
+                date: dateOnly,
+                cloudCover: typeof cloudCover === 'number' ? cloudCover : null,
+                tileId,
+                quicklookHref
+            };
+        }
+
+        /**
+         * Consulta el servicio WFS de Sentinel Hub para obtener escenas disponibles.
+         */
+        async function fetchAvailableScenes({ instanceId, bounds, startDate, endDate, cloudCover }) {
+            const availableTypes = await getWfsTypeNames(instanceId);
+            if (!availableTypes.length) {
+                throw new Error('Tu configuración no expone capas WFS públicas. Revisa el Configuration Utility y habilita al menos una capa con WFS.');
+            }
+            const typeCandidates = activeWfsTypeName
+                ? [activeWfsTypeName, ...availableTypes.filter((t) => t !== activeWfsTypeName)]
+                : availableTypes;
+            let lastError = null;
+            for (const typeName of typeCandidates) {
+                try {
+                    const scenes = await queryScenesWithType({
+                        instanceId,
+                        bounds,
+                        startDate,
+                        endDate,
+                        cloudCover,
+                        typeName
+                    });
+                    activeWfsTypeName = typeName;
+                    return scenes;
+                } catch (error) {
+                    if (isTypeNameNotFoundError(error)) {
+                        lastError = error;
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw lastError || new Error('No se encontró un tipo de dato compatible en tu servicio WFS. Verifica tu configuración en Sentinel Hub.');
+        }
+
+        async function getWfsTypeNames(instanceId) {
+            if (wfsTypeNameCache.has(instanceId)) {
+                return wfsTypeNameCache.get(instanceId);
+            }
+            const capabilitiesUrl = `https://services.sentinel-hub.com/ogc/wfs/${instanceId}?SERVICE=WFS&REQUEST=GetCapabilities`;
+            const response = await fetch(capabilitiesUrl);
+            const text = await response.text();
+            const parser = new DOMParser();
+            const xml = parser.parseFromString(text, 'application/xml');
+            if (xml.querySelector('parsererror')) {
+                wfsTypeNameCache.set(instanceId, []);
+                return [];
+            }
+            const names = Array.from(xml.getElementsByTagName('Name'))
+                .map((node) => node.textContent && node.textContent.trim())
+                .filter(Boolean);
+            const prioritized = prioritizeTypeNames(names);
+            wfsTypeNameCache.set(instanceId, prioritized);
+            return prioritized;
+        }
+
+        function prioritizeTypeNames(names) {
+            const preferredOrder = ['S2', 'SENTINEL', 'L2A', 'L1C'];
+            const scored = names.map((name) => {
+                const upper = name.toUpperCase();
+                const score = preferredOrder.reduce((acc, token, idx) => (
+                    upper.includes(token) ? Math.max(acc, preferredOrder.length - idx) : acc
+                ), 0);
+                return { name, score };
+            });
+            scored.sort((a, b) => b.score - a.score);
+            return scored.map((item) => item.name);
+        }
+
+        async function queryScenesWithType({ instanceId, bounds, startDate, endDate, cloudCover, typeName }) {
+            const bbox = formatBboxLonLat(bounds);
+            const wfsUrl = `https://services.sentinel-hub.com/ogc/wfs/${instanceId}` +
+                `?SERVICE=WFS` +
+                `&REQUEST=GetFeature` +
+                `&TYPENAMES=${encodeURIComponent(typeName)}` +
+                `&SRSNAME=EPSG:4326` +
+                `&BBOX=${bbox}` +
+                `&TIME=${startDate}/${endDate}` +
+                `&MAXCC=${cloudCover}` +
+                `&OUTPUTFORMAT=application/json` +
+                `&MAXFEATURES=100`;
+
+            const response = await fetch(wfsUrl);
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(extractSentinelError(text) || `WFS respondió con ${response.status}`);
+            }
+            if (!contentType.includes('application/json')) {
+                const text = await response.text();
+                throw new Error(`Respuesta inesperada de WFS (${contentType}): ${text.slice(0, 200)}`);
+            }
+            const data = await response.json();
+            const features = data.features || [];
+            const sceneMap = new Map();
+            for (const feature of features) {
+                const props = feature.properties || {};
+                const isoTime = props.date || props.datetime || props.beginposition || props.sensingTime || props.timeStart;
+                if (!isoTime) continue;
+                const dateOnly = isoTime.split('T')[0];
+                if (!sceneMap.has(isoTime)) {
+                    sceneMap.set(isoTime, {
+                        isoTime,
+                        date: dateOnly,
+                        cloudCover: props.CLOUDCOVERAGE || props.cloudCover || props.cloudCoverPercentage || props.cloudcoverpercentage || null,
+                        tileId: props.id || props.name || feature.id
+                    });
+                }
+            }
+            return Array.from(sceneMap.values())
+                .sort((a, b) => new Date(b.isoTime) - new Date(a.isoTime))
+                .slice(0, MAX_SCENES);
+        }
+
+        /**
+         * Renderiza la galería de escenas disponibles.
+         */
+        function renderSceneGallery({ scenes, instanceId, bounds, authToken }) {
+            sceneGallery.innerHTML = '';
+            scenes.forEach(scene => {
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.className = 'scene-card bg-gray-900 border border-gray-700 rounded-lg overflow-hidden text-left transition hover:border-green-400 focus:outline-none';
+                card.dataset.isoTime = scene.isoTime;
+
+                const previewWrapper = document.createElement('div');
+                previewWrapper.className = 'relative w-full h-40 bg-gray-800';
+
+                const img = document.createElement('img');
+                img.alt = `Vista previa ${scene.date}`;
+                img.className = 'w-full h-full object-cover';
+                previewWrapper.appendChild(img);
+                setScenePreviewImage({
+                    imgElement: img,
+                    scene,
+                    instanceId,
+                    bounds,
+                    authToken
+                });
+
+                const meta = document.createElement('div');
+                meta.className = 'absolute bottom-0 left-0 right-0 bg-black/60 text-xs px-2 py-1 text-white flex justify-between';
+                const metaDate = document.createElement('span');
+                metaDate.innerText = scene.date;
+                const metaCloud = document.createElement('span');
+                metaCloud.innerText = scene.cloudCover != null ? `${scene.cloudCover}% nubes` : 'Nubes N/D';
+                meta.appendChild(metaDate);
+                meta.appendChild(metaCloud);
+                previewWrapper.appendChild(meta);
+
+                const body = document.createElement('div');
+                body.className = 'p-3 text-sm text-gray-300';
+                body.innerHTML = `<p>Tile: <span class="text-white">${scene.tileId || 'N/A'}</span></p>`;
+
+                card.appendChild(previewWrapper);
+                card.appendChild(body);
+                card.addEventListener('click', () => selectSceneCard(scene, card));
+                sceneGallery.appendChild(card);
+            });
+        }
+
+        function buildPreviewUrl({ instanceId, bounds, isoTime, tileId }) {
+            const { from, to } = getTimeRangeFromSelection(isoTime, dateStartInput.value, dateEndInput.value);
+            const bbox = formatBbox(bounds);
+            const width = 512;
+            const height = 512;
+            const layerId = previewLayerInput.value.trim() || DEFAULT_PREVIEW_LAYER_ID;
+            return `https://services.sentinel-hub.com/ogc/wms/${instanceId}` +
+                `?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0` +
+                `&LAYERS=${encodeURIComponent(layerId)}` +
+                `&BBOX=${bbox}` +
+                `&TIME=${from}/${to}` +
+                `&MAXCC=100` +
+                `&WIDTH=${width}` +
+                `&HEIGHT=${height}` +
+                `&CRS=EPSG:4326` +
+                `&FORMAT=image/jpeg` +
+                `&PREVIEW=2` +
+                `&GAMMA=1.4` +
+                `&TRANSPARENT=false` +
+                `&SHOWLOGO=false` +
+                (tileId ? `&TILEID=${encodeURIComponent(tileId)}` : '');
+        }
+
+        function setScenePreviewImage({ imgElement, scene, instanceId, bounds, authToken }) {
+            const fallbackUrl = buildPreviewUrl({ instanceId, bounds, isoTime: scene.isoTime, tileId: scene.tileId });
+            const parent = imgElement.parentElement;
+            const showPlaceholder = () => {
+                if (!parent.querySelector('.scene-preview-placeholder')) {
+                    const fallback = document.createElement('div');
+                    fallback.className = 'scene-preview-placeholder absolute inset-0 flex items-center justify-center text-xs text-gray-400';
+                    fallback.innerText = 'Sin vista previa';
+                    parent.appendChild(fallback);
+                }
+                imgElement.classList.add('hidden');
+            };
+            imgElement.onerror = showPlaceholder;
+
+            if (scene.quicklookHref && authToken) {
+                fetch(scene.quicklookHref, {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('quicklook no disponible');
+                        }
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        const objectUrl = URL.createObjectURL(blob);
+                        imgElement.src = objectUrl;
+                        imgElement.dataset.objectUrl = objectUrl;
+                    })
+                    .catch(() => {
+                        imgElement.src = fallbackUrl;
+                    });
+            } else {
+                imgElement.src = fallbackUrl;
+            }
+        }
+
+        function selectSceneCard(scene, cardElement) {
+            selectedSceneDate = scene.isoTime;
+            selectedSceneTileId = scene.tileId || null;
+            selectedSceneInfo.innerText = `Escena seleccionada: ${scene.date} (nubes ${scene.cloudCover != null ? scene.cloudCover + '%' : 'N/D'})`;
+            Array.from(sceneGallery.querySelectorAll('.scene-card')).forEach((card) => {
+                card.classList.remove('ring-2', 'ring-green-400');
+            });
+            cardElement.classList.add('ring-2', 'ring-green-400');
+        }
+
+        /**
+         * Ejecuta la Process API y renderiza la respuesta.
+         */
+        async function requestProcessImage({ clientId, clientSecret, geometry, timeFrom, timeTo, width, height, cloudCover, evalscript, tileId }) {
+            const headers = await getAuthHeaders(clientId, clientSecret);
+            const payload = buildProcessPayload({ geometry, timeFrom, timeTo, width, height, cloudCover, evalscript, tileId });
+            const response = await fetch(PROCESS_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...headers
+                },
+                body: JSON.stringify(payload)
+            });
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok) {
+                if (contentType.includes('application/json')) {
+                    const errorJson = await response.json();
+                    throw new Error(parseProcessApiError(errorJson));
+                }
+                const text = await response.text();
+                throw new Error(text.slice(0, 200) || `El servidor respondió con ${response.status}`);
+            }
+            if (!contentType.startsWith('image/')) {
+                const text = await response.text();
+                const reason = extractSentinelError(text);
+                throw new Error(reason || 'El servicio devolvió un resultado no gráfico.');
+            }
+            const blob = await response.blob();
+            await displayBlobAsImage(blob, null);
+        }
+
+        /**
+         * Ejecuta una petición WMS clásica usando el Instance ID.
+         */
+        async function requestWmsImage({ instanceId, layerId, bounds, geometry, timeFrom, timeTo, width, height, cloudCover, tileId }) {
+            const bbox = formatBbox(bounds);
+            const geometryWkt = geoJsonPolygonToWkt(geometry);
+            const time = `${timeFrom}/${timeTo}`;
+            const wmsUrl = `https://services.sentinel-hub.com/ogc/wms/${instanceId}` +
+                `?SERVICE=WMS` +
+                `&REQUEST=GetMap` +
+                `&VERSION=1.3.0` +
+                `&LAYERS=${layerId}` +
+                `&BBOX=${bbox}` +
+                `&TIME=${time}` +
+                `&MAXCC=${cloudCover}` +
+                `&WIDTH=${width}` +
+                `&HEIGHT=${height}` +
+                `&CRS=EPSG:4326` +
+                (geometryWkt ? `&GEOMETRY=${encodeURIComponent(geometryWkt)}` : '') +
+                (tileId ? `&TILEID=${encodeURIComponent(tileId)}` : '') +
+                `&FORMAT=image/png`;
+            
+            const response = await fetch(wmsUrl);
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok) {
+                const text = await response.text();
+                const reason = extractSentinelError(text);
+                throw new Error(reason || `El servidor respondió con ${response.status}`);
+            }
+            if (!contentType.startsWith('image/')) {
+                const text = await response.text();
+                const reason = extractSentinelError(text);
+                throw new Error(reason || 'El servicio WMS devolvió una respuesta no gráfica.');
+            }
+            const blob = await response.blob();
+            await displayBlobAsImage(blob, wmsUrl);
+        }
+
+        /**
+         * Muestra un blob como imagen en el panel de resultados.
+         */
+        function displayBlobAsImage(blob, downloadUrl) {
+            return new Promise((resolve, reject) => {
+                if (currentImageObjectUrl) {
+                    URL.revokeObjectURL(currentImageObjectUrl);
+                }
+                currentImageObjectUrl = URL.createObjectURL(blob);
+                const img = new Image();
+                img.src = currentImageObjectUrl;
+                img.onload = () => {
+                    analysisMessage.style.display = 'none';
+                    resultsImageContainer.appendChild(img);
+                    resultsHelperText.style.display = 'block';
+                    openWmsLink.href = downloadUrl || currentImageObjectUrl;
+                    openWmsLink.classList.remove('hidden');
+                    resolve();
+                };
+                img.onerror = () => {
+                    if (currentImageObjectUrl) {
+                        URL.revokeObjectURL(currentImageObjectUrl);
+                        currentImageObjectUrl = null;
+                    }
+                    reject(new Error('No se pudo renderizar la imagen descargada.'));
+                };
+            });
+        }
+
+        /**
+         * Recupera un token (cacheado) usando Client Credentials.
+         */
+        async function getAccessToken(clientId, clientSecret) {
+            const signature = `${clientId}:${clientSecret}`;
+            if (tokenSignature !== signature) {
+                accessToken = null;
+                tokenExpiresAt = 0;
+                tokenSignature = signature;
+            }
+            if (accessToken && Date.now() < tokenExpiresAt - 60_000) {
+                return accessToken;
+            }
+            const body = new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                client_secret: clientSecret
+            });
+            const response = await fetch(TOKEN_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: body.toString()
+            });
+            if (!response.ok) {
+                const errorPayload = await response.json().catch(() => ({}));
+                const message = errorPayload.error_description || errorPayload.error || `El servidor respondió con ${response.status}`;
+                throw new Error(`No se pudo obtener el token OAuth: ${message}`);
+            }
+            const tokenJson = await response.json();
+            accessToken = tokenJson.access_token;
+            tokenExpiresAt = Date.now() + (tokenJson.expires_in || 0) * 1000;
+            return accessToken;
+        }
+
+        /**
+         * Devuelve los encabezados Authorization necesarios para Process API.
+         */
+        async function getAuthHeaders(clientId, clientSecret) {
+            const token = await getAccessToken(clientId, clientSecret);
+            return { 'Authorization': `Bearer ${token}` };
+        }
+
+        /**
+         * Convierte la respuesta de error de Process API en un mensaje legible.
+         */
+        function parseProcessApiError(payload) {
+            if (!payload) return 'Error desconocido en Process API.';
+            if (payload.error && payload.error.message) {
+                return payload.error.message;
+            }
+            if (payload.error_description) {
+                return payload.error_description;
+            }
+            if (payload.message) {
+                return payload.message;
+            }
+            return JSON.stringify(payload).slice(0, 200);
+        }
+
+        /**
+         * Convierte un polígono GeoJSON a WKT (para GEOMETRY en WMS).
+         */
+        function geoJsonPolygonToWkt(feature) {
+            if (!feature || feature.type !== 'Feature' || !feature.geometry || feature.geometry.type !== 'Polygon') {
+                return '';
+            }
+            const rings = feature.geometry.coordinates
+                .map(ring => closeRingIfNecessary(ring))
+                .map(ring => ring.map(coord => `${coord[0]} ${coord[1]}`).join(', '))
+                .map(ringStr => `(${ringStr})`);
+            return `POLYGON(${rings.join(', ')})`;
+        }
+
+        /**
+         * Devuelve el bbox en el orden requerido por WMS 1.3.0 (lat,lon).
+         */
+        function formatBbox(bounds) {
+            return `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
+        }
+
+        /**
+         * Devuelve el bbox en orden lon/lat para consultas WFS.
+         */
+        function formatBboxLonLat(bounds) {
+            return `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+        }
+
+        /**
+         * Genera el rango temporal (desde/hasta) usado por WMS y Process API.
+         */
+        function getTimeRangeFromSelection(selectedIso, fallbackStart, fallbackEnd) {
+            if (selectedIso) {
+                const dateObj = new Date(selectedIso);
+                const dateIso = isNaN(dateObj.getTime()) ? selectedIso.split('T')[0] : dateObj.toISOString().split('T')[0];
+                return {
+                    from: `${dateIso}T00:00:00Z`,
+                    to: `${dateIso}T23:59:59Z`
+                };
+            }
+            return {
+                from: `${fallbackStart}T00:00:00Z`,
+                to: `${fallbackEnd}T23:59:59Z`
+            };
+        }
+
+        function isTypeNameNotFoundError(error) {
+            if (!error || !error.message) return false;
+            return /typename/i.test(error.message) && /(not found|invalid)/i.test(error.message);
+        }
+
+        /**
+         * Extrae un posible ServiceException de respuestas XML.
+         */
+        function extractSentinelError(textResponse) {
+            if (!textResponse) return '';
+            const exceptionMatch = textResponse.match(/<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/i);
+            if (exceptionMatch) {
+                return exceptionMatch[1].trim();
+            }
+            return textResponse.slice(0, 200).trim();
+        }
+
+    </script>
+</body>
+</html>
